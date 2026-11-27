@@ -8,9 +8,10 @@
 // What radar-2 does with the snapshot's own figures:
 //   * implied value is log-scaled on TVL — 0.25 x TVL^0.75 x TVL_max^0.25 — so a protocol smaller than
 //     the largest one in the snapshot is lifted toward it and growth and age can move its rank;
-//   * the board ranks all 289 rankable pre-token protocols: the 40 on the watchlist plus the 249 other
-//     pre-token protocols that are neither an exchange nor a versioned pool, below the floor and above
-//     it alike. The floor is never the whole board;
+//   * the board ranks all 198 rankable pre-token protocols: the 40 on the watchlist plus the 158 other
+//     pre-token protocols that are neither an exchange, nor a wrapped, staked or bridged product of a
+//     protocol whose token already trades, nor a versioned pool, below the floor and above it alike.
+//     The floor is never the whole board;
 //   * every row carries an eight-step farm plan derived from its own record (category, chains, TVL, age),
 //     including the gas its chain really costs and the eligibility check before anything is claimed.
 //
