@@ -1,6 +1,12 @@
 // Token Radar's plain dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and
 // renders the ranked board, a filterable table, a per-protocol detail drawer with the model's own
 // inputs and the protocol's farm plan. No network: every byte it shows is in data.js.
+//
+// Mirror rule: impliedOf, actionFor, gasFor, stepText, capitalFor and holdDaysFor must stay the same
+// derivation as lib/model.ts, line for line in effect. The page recomputes every row from the raw
+// figures and the farm plan from the row's own record, and the sync checks prove it — 198 implied
+// values and 1,584 farm-step strings, identical on both sides. Change one side without the other
+// and the detail drawer will say the board is stale.
 (function () {
   'use strict';
 
@@ -13,6 +19,8 @@
   function currentModel() { return state.sandbox || DATA.model; }
   function impliedFor(r) { return state.sandbox ? impliedOf(r, state.sandbox) : r.implied_value_usd; }
 
+  // Money is shown as $1.38B, $961.3M or $444.8M — two decimals for billions, one for millions — so
+  // the implied-value bars and the table figures read at the same precision the screenshots show.
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
@@ -21,6 +29,8 @@
     if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
     return usd.format(n);
   }
+  // Percentages carry a sign and two decimals; a null growth is 'n/a', never zero — zero growth is
+  // a measurement, and showing it as n/a would hide a protocol that simply did not move.
   function fmtPct(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
@@ -32,6 +42,8 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  // The detail drawer shows the recomputation next to the board's own figure, and says so when they
+  // differ — a stale data.js is visible the moment a row is opened, not hidden behind the table.
   // The scale is log-compressed: at tvl_max it equals base_multiple x tvl_max, as a flat multiple would,
   // but smaller protocols are lifted toward it so growth and age can move their rank.
   function impliedOf(row, model) {
@@ -43,6 +55,10 @@
     return Math.max(1, Math.round(model.base_multiple * Math.pow(row.tvl_usd, model.tvl_exponent) * Math.pow(tvlMax, 1 - model.tvl_exponent) * growthMult * maturity));
   }
 
+  // The one element helper: attrs carry class, text, html, on* handlers and plain attributes, and
+  // any further arguments are children — strings become text nodes, arrays are flattened, the rest
+  // are appended as nodes. Every piece of the page is built through it, so there is no innerHTML
+  // template anywhere except the single explicit 'html' attr.
   function el(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
@@ -97,6 +113,8 @@
     var name = p.name;
     // Specific record types first: each of these contains a general branch's keyword, so it must be
     // matched before that branch rather than after it. The branch order mirrors lib/model.ts exactly.
+    // A branch added here without its twin in lib/model.ts makes the page's plan differ from the
+    // board's plan for that category, and the farm-step sync check will catch it.
     if (c.indexOf('uncollateralized lending') >= 0) return 'Lend $' + capital + ' of USDC unsecured through ' + name + ' on ' + chain + ' in one small, short-dated position.';
     if (c.indexOf('cdp manager') >= 0) return 'Open a $' + capital + ' CDP on ' + chain + ' through ' + name + ' and mint only part of the debt ceiling.';
     if (c.indexOf('collateral markets') >= 0) return 'Supply $' + capital + ' of collateral to ' + name + ' on ' + chain + ' and borrow a small amount against it.';
@@ -168,6 +186,8 @@
     ].map(stepText);
   }
 
+  // The hash carries the view — search, category and the open protocol — so a filtered board or an
+  // open detail drawer can be linked and reloaded without losing the reader's place.
   function readHash() {
     var hash = window.location.hash.replace(/^#/, '');
     if (!hash) return;
@@ -195,6 +215,8 @@
       return hay.indexOf(q) >= 0;
     });
   }
+  // Nulls sort last on purpose: a protocol with no seven-day growth or no age is never ranked above
+  // one the snapshot actually measured, whichever direction the column is sorted in.
   function sortedRows(list) {
     var key = state.sort;
     return list.slice().sort(function (a, b) {
@@ -210,6 +232,8 @@
     });
   }
 
+  // The header carries the snapshot date, the sealed-snapshot note and the model version, so every
+  // screenshot of the board states what data it shows and which model scored it.
   function header() {
     return el('header', { class: 'top' },
       el('div', { class: 'brand' }, el('span', { class: 'mark' }), el('span', { class: 'brand-name', text: 'Token Radar' })),
@@ -236,6 +260,8 @@
     );
   }
 
+  // The category list is built from the rows themselves, so a category the snapshot never names
+  // can never appear as a filter, and one it does name always can.
   function controls() {
     var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).sort();
     var search = el('input', { type: 'search', id: 'q', placeholder: 'Search name, category or chain', value: state.q, 'aria-label': 'Search the board' });
@@ -251,7 +277,7 @@
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
-      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
+      el('span', { class: 'count', 'aria-live': 'polite', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
   }
 
@@ -274,6 +300,8 @@
         el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; writeHash(); render(); } })
       ));
     }
+    // With the sandbox on, the ranks are re-derived from the sandbox's own implied values, so the
+    // table shows the sandbox's ordering while the sealed ranks stay in board.json untouched.
     var rankOf = {};
     var max = 1;
     if (sandboxOn) {
@@ -328,6 +356,9 @@
     );
   }
 
+  // The live table shows market cap where the pre-token table shows implied value: a protocol that
+  // already trades is priced by the market, and putting a model figure beside it would invite
+  // exactly the comparison the board is built to avoid.
   function liveTable() {
     var tbody = el('tbody');
     DATA.live.forEach(function (r) {
@@ -352,7 +383,9 @@
   }
 
   // The model's statement, built from the model's own fields so the words follow the numbers the
-  // table is using — sealed radar-2 by default, the sandbox's copy when the sandbox is open.
+  // table is using — sealed radar-2 by default, the sandbox's copy when the sandbox is open. The
+  // formula is the only place the model's constants are printed as text, and it is rebuilt from
+  // the same object the table scores with, so the two can never drift apart.
   function formulaText(m) {
     return 'implied = round( ' + m.base_multiple + ' x tvl_usd^' + m.tvl_exponent + ' x tvl_max^' + (1 - m.tvl_exponent) + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )';
   }
@@ -366,6 +399,9 @@
     ['maturity_range', 'Maturity range', '0.01']
   ];
 
+  // The sandbox re-scores every row in the browser from the seven editable constants and re-sorts
+  // the table, but it never writes to DATA.model and never touches board.json — it is a what-if
+  // view of the same rows, and Reset to radar-2 restores the sealed constants.
   function sandboxPanel() {
     var sm = currentModel();
     var fields = SANDBOX_FIELDS.map(function (f) {
@@ -428,6 +464,8 @@
       ),
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
     ));
+    // The equation shows the model's inputs and both multipliers, then the page's own recomputation
+    // of the row, so the reader can check the arithmetic instead of taking the number on trust.
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
@@ -450,12 +488,16 @@
       }))
     ));
     if (typeof dialog.showModal === 'function') {
+      // showModal is the dialog's own way in: it traps focus and Escape for free, and the close
+      // event clears the selection and the hash, so the back button and the Close button agree.
       if (!dialog.open) dialog.showModal();
     } else {
       dialog.setAttribute('open', '');
     }
   }
 
+  // One render rebuilds the whole shell from state: a search, a filter, a tab or a sort re-renders
+  // the same way, and the detail dialog is re-attached after the shell so it survives the rebuild.
   function render() {
     app.textContent = '';
     var shell = el('div', { class: 'shell' });

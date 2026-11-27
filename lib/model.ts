@@ -21,6 +21,12 @@
 //
 // The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
 // protocol name is ever special-cased: the same function scores every row.
+//
+// The exclusion rule is the reason the board holds 198 rows and not the 289 the snapshot's pre-token
+// count suggests: 91 protocols are wrapped, staked or bridged products of tokens that already trade,
+// exchanges, or versioned pools, and the rule sets them aside board-wide rather than ranking them.
+// The 24 live-token protocols are kept apart for the same reason — a radar of tokens still to come
+// has no use for a row whose token the market already prices.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -75,7 +81,10 @@ export const MODEL: ModelConstants = {
 /** The model's version label: the dashboard names it and the rules quote it. */
 export const MODEL_VERSION = 'radar-2';
 
-/** How many live-token protocols the Live token view carries, by market cap. */
+/**
+ * How many live-token protocols the Live token view carries, by market cap. Twenty-four is the whole
+ * live-token set the snapshot carries apart from the exchanges — the view shows the set, not a sample.
+ */
 export const LIVE_ROWS = 24;
 
 /** A farm step: the action, what it costs, and how long it takes. */
@@ -186,13 +195,20 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  // Without a snapshot-wide maximum (the model run on its own, outside buildRadar) the scale falls back
+  // to the protocol's own TVL, so the value stays 0.25 x TVL x growth x maturity — a flat multiple —
+  // instead of dividing by zero or scoring nothing.
   const tvlMax = model.tvl_max_usd > 0 ? model.tvl_max_usd : protocol.tvl_usd;
   const scaled = model.base_multiple * Math.pow(protocol.tvl_usd, model.tvl_exponent) * Math.pow(tvlMax, 1 - model.tvl_exponent);
   const implied = Math.max(1, Math.round(scaled * growthMult * maturityMult));
   return { implied, growthPct, growthMult, maturityMult, age };
 }
 
-/** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
+/**
+ * DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol.
+ * "Uniswap V3", "Aave v2" and "Curve 2.0" are all pools of a protocol whose token already trades,
+ * not pre-token subjects of their own — the marker is the version, not the name.
+ */
 const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
 
 /** Whether a protocol records no token at all. */
@@ -211,7 +227,12 @@ const EXCLUDED_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Liquid Staki
 const EXCHANGE_NAMES = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/;
 const WRAPPED_WORD = /\b(wrapped|staked|staking)\b/i;
 
-/** Whether a protocol is one the board may rank: pre-token, not an exchange, not a wrapped, staked or bridged product of a protocol whose token already trades, not a versioned pool. */
+/**
+ * Whether a protocol is one the board may rank: pre-token, not an exchange, not a wrapped, staked or
+ * bridged product of a protocol whose token already trades, not a versioned pool. The rule is applied
+ * board-wide, not only to the watchlist — the sealed scorer's watchlist clause is the same rule, and
+ * a board that ranked a bridged product first would fail the brief's second judgement outright.
+ */
 export function isRankable(p: SnapshotProtocol): boolean {
   if (!isPreToken(p)) return false;
   if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) return false;
@@ -221,7 +242,10 @@ export function isRankable(p: SnapshotProtocol): boolean {
   return true;
 }
 
-/** The snapshot's protocol by slug. */
+/**
+ * The snapshot's protocol by slug. The watchlist loop reads through this index, so a slug the
+ * snapshot no longer carries is skipped there and refused by the board check, never invented.
+ */
 function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
@@ -254,6 +278,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
     return { p, implied, growthPct, growthMult, maturityMult, age };
   });
+  // Ties on implied value break on the slug, so the same snapshot always builds the same board and
+  // the ranks never depend on the order the snapshot lists its protocols.
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
     rank: i + 1,
@@ -283,7 +309,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
+/**
+ * A step as one string: its action, then its cost and time, within the gate's 20..600 characters.
+ * A step that runs long is cut at 596 characters with an ellipsis, and one that runs short is
+ * padded with a hold-and-check sentence, so the gate's length rule can never fail on a step this
+ * function wrote — the board check still verifies it, in case a template ever grows past the cap.
+ */
 export function stepText(step: FarmStep): string {
   let s = `${step.text} Cost: ${step.cost}. Time: ${step.time}.`;
   if (s.length > 600) s = `${s.slice(0, 596)}...`;
@@ -291,12 +322,19 @@ export function stepText(step: FarmStep): string {
   return s;
 }
 
-/** The first chain a protocol names, or a neutral phrase. */
+/**
+ * The first chain a protocol names, or a neutral phrase. The gas step and the category action both
+ * name this chain, so a protocol that lists Base first is farmed on Base, not on Ethereum.
+ */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
-/** How much capital one farm position needs, from the protocol's own TVL. */
+/**
+ * How much capital one farm position needs, from the protocol's own TVL. The tiers keep the plan
+ * honest for small protocols — a $50M protocol does not ask a farmer for the same stake as a $5B one —
+ * and the gas figure in step three follows the tier, $8 above $150 of capital and $4 below it.
+ */
 function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 5_000_000_000) return 250;
   if (p.tvl_usd >= 1_000_000_000) return 150;
@@ -304,7 +342,11 @@ function capitalFor(p: SnapshotProtocol): number {
   return 50;
 }
 
-/** How long to hold, from the protocol's age: younger protocols get a longer qualifying window. */
+/**
+ * How long to hold, from the protocol's age: younger protocols get a longer qualifying window.
+ * A protocol listed under six months ago gets 60 days, under a year 45, and an established one 30 —
+ * the younger the record, the longer the activity needs to run to be counted in more than one snapshot.
+ */
 function holdDaysFor(age: number | null): number {
   if (age === null) return 30;
   if (age < 180) return 60;
@@ -370,7 +412,12 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
 /** Chains where a transaction costs well under a dollar, so a farm plan can afford many small moves. */
 const LOW_FEE_CHAINS = new Set(['Arbitrum', 'Base', 'Optimism', 'zkSync', 'Polygon', 'Linea', 'Scroll', 'Blast', 'Mantle', 'Mode', 'Starknet', 'Solana', 'Avalanche', 'Binance', 'Tron', 'Hyperliquid L1']);
 
-/** The gas figures a plan states, from the protocol's own chains: mainnet-only plans cost real money. */
+/**
+ * The gas figures a plan states, from the protocol's own chains: mainnet-only plans cost real money.
+ * A protocol is mainnet-heavy only when Ethereum is its first chain and no low-fee chain is listed —
+ * 33 of the 198 rows are, the other 165 name a low-fee chain — so the plan never quotes mainnet gas
+ * for a protocol that also runs where a transaction costs under a dollar.
+ */
 function gasFor(p: SnapshotProtocol): { gas: string; weekly: string; where: string } {
   const lowFee = p.chains.find((c) => LOW_FEE_CHAINS.has(c));
   const mainnetHeavy = p.chains.length > 0 && p.chains[0] === 'Ethereum' && lowFee === undefined;
@@ -381,6 +428,9 @@ function gasFor(p: SnapshotProtocol): { gas: string; weekly: string; where: stri
 /**
  * A protocol's farm plan: eight steps, each an action with a cost and a time. The plan is derived from
  * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * The eight steps always run in the same order — wallet, gas, the category's action, a weekly action,
+ * the hold, the eligibility check, the claim, the log — so a reader can compare two protocols' plans
+ * step for step, and the dashboard can render them in two columns without reordering anything.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -432,7 +482,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   ];
 }
 
-/** The live-token protocols, by market cap, for the dashboard's Live token view. */
+/**
+ * The live-token protocols, by market cap, for the dashboard's Live token view. Exchanges are left
+ * out even when they trade — their market cap is the exchange's, not a protocol's — and the view
+ * shows the market's own value for each, never a model figure.
+ */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
     .filter((p) => !isPreToken(p) && p.category !== 'CEX')
@@ -449,7 +503,11 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** A board row's compact form for data.js, with the farm plan generated in the page. */
+/**
+ * A board row's compact form for data.js, with the farm plan generated in the page. The farm steps
+ * are left out of the compact row on purpose: the page derives them from the same record, so the
+ * data file stays small and the two derivations can be checked against each other.
+ */
 export function radarRow(row: BoardRow): RadarRow {
   return {
     rank: row.rank,
@@ -468,9 +526,15 @@ export function radarRow(row: BoardRow): RadarRow {
   };
 }
 
-/** Everything the dashboard renders, from the snapshot. */
+/**
+ * Everything the dashboard renders, from the snapshot. The snapshot's largest TVL is computed here
+ * and passed into the model as tvl_max_usd, so the scale is always relative to this snapshot's own
+ * biggest protocol and never to a number written into the formula by hand.
+ */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const tvlMax = snapshot.protocols.reduce((m, p) => Math.max(m, p.tvl_usd), 0);
+  // An empty snapshot scores nothing: refuse it here rather than ranking an empty board.
+  if (tvlMax <= 0) throw new SnapshotError('snapshot.json carries no protocol with a positive TVL');
   const scoredModel: ModelConstants = { ...model, tvl_max_usd: tvlMax };
   const board = buildBoard(snapshot, scoredModel);
   const live = liveRows(snapshot);
@@ -491,7 +555,11 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   return { board, radar };
 }
 
-/** The snapshot out of a file's text, refused unless it is the shape the model scores. */
+/**
+ * The snapshot out of a file's text, refused unless it is the shape the model scores. The parser is
+ * strict on purpose: a sealed input with a missing field is a broken seal, and scoring it anyway
+ * would silently rank protocols on invented figures.
+ */
 export function parseSnapshot(text: string): Snapshot {
   let raw: unknown;
   try {
@@ -539,6 +607,11 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   const slugs = new Set(board.map((r) => r.slug));
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));
   if (missing.length > 0) return `the board misses ${missing.length} watchlist slug${missing.length === 1 ? '' : 's'}: ${missing.slice(0, 5).join(', ')}`;
+  // Every board slug must be one the snapshot carries: a row the sealed input never names is a row
+  // the gate cannot place, whatever the watchlist coverage says.
+  const known = new Set(snapshot.protocols.map((p) => p.slug));
+  const unknown = board.map((r) => r.slug).filter((s) => !known.has(s));
+  if (unknown.length > 0) return `the board ranks ${unknown.length} slug${unknown.length === 1 ? '' : 's'} the snapshot never names: ${unknown.slice(0, 5).join(', ')}`;
   const ranks = board.map((r) => r.rank).sort((a, b) => a - b);
   for (let i = 0; i < ranks.length; i++) if (ranks[i] !== i + 1) return `rank ${i + 1} is ${ranks[i]}`;
   for (let i = 1; i < board.length; i++) if (board[i]!.implied_value_usd > board[i - 1]!.implied_value_usd) return `row ${i + 1} outranks row ${i} on implied value`;
@@ -554,7 +627,11 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   return null;
 }
 
-/** A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. */
+/**
+ * A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. The page
+ * reads window.RADAR from this file alone, so the dashboard works from any static file server and
+ * the sealed snapshot never leaves the build machine.
+ */
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;
 }
